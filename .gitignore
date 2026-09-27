@@ -1,15 +1,16 @@
-# Virtual environment
-.venv/
-
 # Python
+.venv/
 __pycache__/
-*.pyc
+*.py[cod]
 
 # Jupyter
 .ipynb_checkpoints/
 
-# Dataset
+# Local data and trained weights
 data/raw/
+checkpoints/
 
-# macOS
+# OS and editor files
 .DS_Store
+.vscode/
+.idea/

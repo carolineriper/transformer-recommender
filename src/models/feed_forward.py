@@ -3,6 +3,8 @@ import torch.nn as nn
 
 
 class FeedForward(nn.Module):
+    """Position-wise feed-forward network used in each Transformer block."""
+
     def __init__(
         self,
         embedding_dim: int,

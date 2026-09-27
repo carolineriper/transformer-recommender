@@ -7,6 +7,8 @@ from .transformer_block import TransformerBlock
 
 
 class TransformerRecommender(nn.Module):
+    """Causal Transformer for full-catalog next-movie prediction."""
+
     def __init__(
         self,
         num_movies: int,
@@ -18,10 +20,12 @@ class TransformerRecommender(nn.Module):
     ) -> None:
         super().__init__()
 
-        # Embeddings
+        self.padding_idx = num_movies
+
         self.movie_embedding = MovieEmbedding(
             num_movies=num_movies,
             embedding_dim=embedding_dim,
+            padding_idx=self.padding_idx,
         )
 
         self.position_embedding = PositionalEmbedding(
@@ -29,7 +33,6 @@ class TransformerRecommender(nn.Module):
             embedding_dim=embedding_dim,
         )
 
-        # Transformer blocks
         self.blocks = nn.ModuleList([
             TransformerBlock(
                 embedding_dim=embedding_dim,
@@ -39,11 +42,36 @@ class TransformerRecommender(nn.Module):
             for _ in range(num_layers)
         ])
 
-        # Final normalization
         self.norm = nn.LayerNorm(embedding_dim)
 
-        # 128 -> num_movies
         self.output = nn.Linear(
             embedding_dim,
             num_movies,
         )
+
+    def forward(
+        self,
+        movie_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        _, seq_len = movie_ids.shape
+
+        padding_mask = movie_ids == self.padding_idx
+
+        positions = torch.arange(
+            seq_len,
+            device=movie_ids.device,
+        )
+
+        movie_vectors = self.movie_embedding(movie_ids)
+        position_vectors = self.position_embedding(positions)
+        x = movie_vectors + position_vectors
+
+        for block in self.blocks:
+            x = block(
+                x,
+                padding_mask=padding_mask,
+            )
+
+        x = self.norm(x)
+        x = x[:, -1, :]
+        return self.output(x)

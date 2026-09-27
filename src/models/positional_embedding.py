@@ -3,6 +3,8 @@ import torch.nn as nn
 
 
 class PositionalEmbedding(nn.Module):
+    """Learn an embedding for each position in the fixed-length context."""
+
     def __init__(
         self,
         max_seq_len: int,

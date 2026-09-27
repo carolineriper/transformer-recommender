@@ -6,6 +6,8 @@ from .feed_forward import FeedForward
 
 
 class TransformerBlock(nn.Module):
+    """Pre-norm causal attention and feed-forward residual block."""
+
     def __init__(
         self,
         embedding_dim: int,
@@ -26,8 +28,15 @@ class TransformerBlock(nn.Module):
             hidden_dim,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attention(self.norm1(x))
+    def forward(
+        self,
+        x: torch.Tensor,
+        padding_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attention(
+            self.norm1(x),
+            padding_mask=padding_mask,
+        )
         x = x + self.feed_forward(self.norm2(x))
 
         return x
