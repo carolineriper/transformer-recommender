@@ -1,178 +1,127 @@
-# Transformer Recommender
+# Рекомендательная система фильмов
 
-A from-scratch sequential recommender built with PyTorch and evaluated on
-[MovieLens 1M](https://grouplens.org/datasets/movielens/1m/). The project uses
-a causal Transformer to predict the next movie in a user's interaction history
-and compares it with a non-personalized popularity baseline.
+Проект на **MovieLens 1M**. Здесь я разбираю рекомендательные системы на практике: сначала реализовал последовательную модель на Transformer, затем добавил несколько простых подходов для сравнения.
 
-The implementation is intentionally compact and educational: movie and
-positional embeddings, multi-head causal self-attention, feed-forward blocks,
-training, checkpoint selection, ranking metrics, and seen-item filtering are
-implemented explicitly rather than hidden behind a recommender framework.
+Основная задача: по истории взаимодействий пользователя предсказать, какой фильм он оценит следующим. Сравниваю модели по точности рекомендаций, охвату каталога и новизне фильмов.
 
-## Results
+## Данные
 
-Final metrics are reported on the held-out temporal test item for each of the
-6,040 users. Both methods exclude every item already known at test time.
+Использую [MovieLens 1M](https://grouplens.org/datasets/movielens/1m/):
 
-| Model | HR@10 | NDCG@10 |
-|---|---:|---:|
-| **Transformer + full-history masking** | **0.2954** | **0.1714** |
-| Popularity baseline | 0.0369 | 0.0180 |
+- 1 000 209 оценок от 6 040 пользователей.
+- 3 706 фильмов, которые встречаются в истории оценок.
+- Для Content-Based использую 18 жанров.
 
-The Transformer places the actual next movie in its Top-10 for 29.54% of users,
-compared with 3.69% for the popularity baseline. NDCG additionally rewards
-placing the target near the top of the recommendation list.
+Историю каждого пользователя сортирую по времени. Все оценки, кроме двух последних, относятся к Train. Предпоследняя оценка нужна для Validation, последняя для Test.
 
-## Problem formulation
+На Validation предсказываю предпоследний фильм по Train. На Test использую уже известные Train и Validation, чтобы предсказать последний фильм. Фильмы из известной истории исключаются из рекомендаций.
 
-Ratings are treated as timestamped interaction events. The model receives up to
-the last 50 movie indices and predicts one next item over the 3,706 movies that
-have observed ratings.
+Оценки от 1 до 5 в Transformer используются как события взаимодействия, а не как числовой признак. В Content-Based сами значения оценок нужны для построения предпочтений.
 
-For each user, interactions are sorted by timestamp and split chronologically:
+## Что реализовано
 
-```text
-earlier interactions          penultimate item       final item
-        train            ->      validation      ->     test
+### 1. Transformer
+
+Последовательная рекомендательная модель на PyTorch. Основные компоненты реализованы отдельно, чтобы было проще разобраться, как всё работает:
+
+- Эмбеддинги фильмов и их позиций в последовательности.
+- Multi-Head Self-Attention с causal mask.
+- Padding mask, residual connections, LayerNorm и Feed Forward.
+- Обучение на задаче предсказания следующего фильма.
+- Исключение всех известных фильмов перед выбором Top-10.
+
+Для входа беру до 50 последних взаимодействий. В модели 2 Transformer-блока, 4 головы внимания и размерность эмбеддингов 128. Обучение проводилось 6 эпох с AdamW и CrossEntropyLoss. Лучший чекпоинт выбирался по NDCG@10 на Validation.
+
+### 2. Popularity Baseline
+
+Самый простой вариант для сравнения. Считаю, сколько раз фильм встречался в Train, и рекомендую наиболее популярные из тех, которые пользователь ещё не оценивал.
+
+### 3. Content-Based
+
+Здесь рекомендации строятся по жанрам и оценкам пользователя.
+
+Каждый фильм представлен multi-hot вектором из 18 жанров. Для профиля пользователя использую веса `rating - 3`. Положительные оценки усиливают жанры, отрицательные уменьшают их вес. Полученный профиль сравниваю с фильмами через Cosine Similarity.
+
+Если профиль получился нулевым, использую рекомендации по популярности. Популярность также помогает упорядочить фильмы с одинаковым сходством.
+
+### 4. Temporal Content-Based
+
+Попробовал учитывать, что интересы пользователя со временем меняются. Для этого добавил затухание старых оценок:
+
+```python
+weights = (ratings - 3) * decay
 ```
 
-- Train examples are generated with a sliding next-item prediction window.
-- Validation uses the full train history to predict the penultimate item.
-- Test uses the train history plus the validation item to predict the final item.
+Чем старше взаимодействие, тем меньше оно влияет на профиль. Коэффициент `gamma` подбирал на Validation по NDCG@10. Среди проверенных значений лучше всего сработало **0.6**.
 
-This protocol prevents future interactions from leaking into model training or
-checkpoint selection.
+## Результаты на Test
 
-## Model architecture
+Оценка проводится на последнем взаимодействии каждого из 6 040 пользователей. Во всех моделях исключаю фильмы, которые уже были известны пользователю на момент предсказания.
 
-```text
-movie indices
-    -> learned movie embeddings + learned positional embeddings
-    -> 2 pre-norm Transformer blocks
-         - 4-head causal self-attention
-         - padding-key masking
-         - residual connections
-         - GELU feed-forward network
-    -> final LayerNorm
-    -> representation at the last sequence position
-    -> linear projection over all candidate movies
-```
+| Модель | HR@10 | NDCG@10 | Coverage@10 | Novelty@10 |
+| --- | ---: | ---: | ---: | ---: |
+| **Transformer** | **0.2954** | **0.1714** | **0.6638** | 10.7081 |
+| Popularity | 0.0369 | 0.0180 | 0.0537 | 8.6419 |
+| Content-Based | 0.0262 | 0.0135 | 0.4328 | 11.0040 |
+| Temporal Content-Based (`gamma=0.6`) | 0.0396 | 0.0218 | 0.4595 | 11.0235 |
 
-Training configuration:
+Метрики:
 
-| Parameter | Value |
-|---|---:|
-| Maximum sequence length | 50 |
-| Embedding size | 128 |
-| Attention heads | 4 |
-| Transformer layers | 2 |
-| Feed-forward hidden size | 512 |
-| Batch size | 64 |
-| Optimizer | AdamW |
-| Learning rate | 1e-3 |
-| Objective | Cross-entropy over all movies |
-| Completed training | 6 epochs |
+- **HR@10**: как часто реальный следующий фильм попал в Top-10.
+- **NDCG@10**: учитывает не только попадание, но и позицию фильма в списке.
+- **Coverage@10**: доля фильмов каталога, которые хотя бы раз появились в рекомендациях.
+- **Novelty@10**: насколько редко рекомендуемые фильмы встречались в Train. Здесь используется `-log2` от сглаженной популярности.
 
-The best checkpoint is selected by validation NDCG@10. The test split is used
-only once for the final report and is not used to select an epoch or tune the
-model.
+Лучше всего предсказывает следующий фильм Transformer. Temporal Content-Based заметно улучшила обычную жанровую модель, но всё ещё сильно уступает Transformer.
 
-## Evaluation protocol
+Это ожидаемо: 18 жанров дают довольно грубое описание фильма. Два совершенно разных фильма могут иметь одинаковые жанры. Кроме того, жанровая модель не использует закономерности поведения других пользователей так, как это делает Transformer.
 
-The model context and candidate filtering serve different purposes:
+Сравнение пока исследовательское: во время разработки я уже смотрел результаты базовой модели на Test. Для полностью независимой финальной оценки потребуется новый отложенный набор данных.
 
-- the Transformer context is limited to the last 50 interactions;
-- candidate filtering uses the user's complete known history.
+## Структура проекта
 
-`MovieSequenceDataset` therefore returns `(x, y, user_id)`. During evaluation,
-`user_id` is used to mask all previously seen movie indices before `topk` is
-computed. At validation time the mask is the train history. At test time it is
-the train history plus the validation item. The target itself is never added to
-the mask.
+| Файл | Для чего нужен |
+| --- | --- |
+| `notebooks/01_EDA.ipynb` | Загрузка и первичный анализ MovieLens |
+| `notebooks/02_PyTorch_Basics.ipynb` | Обучение Transformer и сравнение с Popularity |
+| `notebooks/03_Content_Based.ipynb` | Content-Based, подбор `gamma`, оценка на Validation и Test |
+| `src/data/` | Загрузка данных, разбиение по времени, подготовка последовательностей |
+| `src/models/transformer_recommender.py` | Transformer |
+| `src/models/content_based.py` | Жанровые профили и рекомендации с учётом времени |
+| `src/evaluation/metrics.py` | HR, NDCG, Coverage и Novelty |
+| `tests/test_pipeline.py` | Проверки разбиения, масок и размерностей |
 
-The popularity baseline counts movies only in the training histories, ranks them
-globally, and applies the same full-history filtering before producing Top-10
-recommendations. This keeps the candidate protocol comparable across models.
+Остальные части Transformer, включая Attention, FFN и эмбеддинги, вынесены в отдельные файлы внутри `src/models/`.
 
-## Repository layout
+## Как запустить
 
-```text
-transformer-recommender/
-├── data/
-│   └── README.md
-├── notebooks/
-│   ├── 01_EDA.ipynb
-│   └── 02_PyTorch_Basics.ipynb
-├── src/
-│   ├── data/
-│   │   ├── dataset.py
-│   │   ├── load_data.py
-│   │   └── preprocess.py
-│   ├── evaluation/
-│   │   └── metrics.py
-│   └── models/
-│       ├── embedding.py
-│       ├── feed_forward.py
-│       ├── multi_head_attention.py
-│       ├── positional_embedding.py
-│       ├── transformer_block.py
-│       └── transformer_recommender.py
-├── tests/
-│   └── test_pipeline.py
-├── requirements.txt
-└── README.md
-```
-
-## Reproducing the project
-
-The verified environment uses Python 3.12.2. From the repository root:
+Проект запускался на Python 3.12.2. В корне репозитория:
 
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m pip install scikit-learn tqdm
 ```
 
-Download MovieLens 1M from the official GroupLens page and extract it so the
-following files exist:
+Скачай MovieLens 1M по ссылке выше и распакуй данные в `data/raw/ml-1m/`. Для запуска нужны `ratings.dat` и `movies.dat`. Исходные данные и сохранённые веса модели не добавлены в Git.
 
-```text
-data/raw/ml-1m/ratings.dat
-data/raw/ml-1m/movies.dat
-data/raw/ml-1m/users.dat
-```
-
-Then start Jupyter from the repository root:
+Запустить ноутбуки можно через Jupyter или VS Code:
 
 ```bash
 jupyter lab
 ```
 
-Run the notebooks in order:
+Начни с `01_EDA.ipynb`, затем `02_PyTorch_Basics.ipynb` и `03_Content_Based.ipynb`.
 
-1. `notebooks/01_EDA.ipynb`
-2. `notebooks/02_PyTorch_Basics.ipynb`
+Во втором ноутбуке, если есть `checkpoints/best_model.pt`, можно загрузить уже обученную модель. Если файла нет, запускается обучение. Третий ноутбук использует готовые функции из `src/models/content_based.py` и `src/evaluation/metrics.py`.
 
-The second notebook is compatible with **Restart Kernel -> Run All**. If
-`checkpoints/best_model.pt` exists, it loads the checkpoint and skips training.
-If it is missing, the notebook trains the configured six epochs and saves the
-best validation checkpoint. Local checkpoints and raw data are intentionally
-excluded from Git.
-
-Run the fast, training-free checks with:
+Для запуска тестов:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-## Notes and scope
+## Что дальше
 
-- Movie genres and rating values are not model features; the first version uses
-  interaction order only.
-- The model uses a full softmax over the observed movie vocabulary.
-- This repository deliberately stops at the completed first model version: no
-  hyperparameter search, sampled loss, side features, or serving layer is added.
-- The MovieLens dataset is not redistributed. Review the terms included with the
-  dataset before use.
+Следующий этап: Feature-Based / Hybrid Recommender. Планирую добавить признаки пользователя и фильма, обучить ранжирующую модель и попробовать объединить её с предсказаниями Transformer.
